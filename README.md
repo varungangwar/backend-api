@@ -1,4 +1,4 @@
-# Varun Backend API
+# Backend API
 
 ## Description
 A simple Node.js + Express API with one endpoint `/sayHello` that returns a JSON message.
