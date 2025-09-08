@@ -1,41 +1,80 @@
-name: Deploy API (Zero-Downtime)
+name: Deploy API (Zero-Downtime + Secure)
 
 on:
   push:
     branches: [ "main" ]
 
 jobs:
-  deploy:
+  build-and-deploy:
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # Code ko bina delete kiye VM par copy karo (no downtime)
-      - name: Copy code to VM
+      - name: Setup Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: 18
+
+      - name: Install production dependencies (runner)
+        run: |
+          npm install --production
+
+      - name: Package app (runner)
+        run: |
+          # package current app into a single tar file named with run id
+          TARNAME=app_${{ github.run_id }}.tar.gz
+          tar -czf $TARNAME server.js package.json node_modules
+
+      - name: Copy package to VM (secure: uses repo secrets)
         uses: appleboy/scp-action@v0.1.7
         with:
           host: ${{ secrets.VM_HOST }}
           username: ${{ secrets.VM_USERNAME }}
           key: ${{ secrets.VM_SSH_KEY }}
-          # simple project hai, bas yeh files bhejni kaafi
-          source: "server.js,package.json"
-          target: "~/app"
+          port: 22
+          source: "app_${{ github.run_id }}.tar.gz"
+          target: "~/app/releases/"
 
-      # Dependencies install + pm2 reload/start
-      - name: Install deps & reload with pm2
+      - name: Deploy on VM (pm2 reload / zero-downtime)
         uses: appleboy/ssh-action@v1.0.3
         with:
           host: ${{ secrets.VM_HOST }}
           username: ${{ secrets.VM_USERNAME }}
           key: ${{ secrets.VM_SSH_KEY }}
+          port: 22
           script: |
-            cd ~/app
-            npm install --omit=dev
-            if pm2 list | grep -q "varun-api"; then
-              pm2 reload varun-api
-            else
-              pm2 start server.js --name varun-api
+            set -e
+            # prepare directories
+            mkdir -p ~/app/releases
+            RELEASE_DIR=~/app/releases/release_${{ github.run_id }}
+            mkdir -p "$RELEASE_DIR"
+
+            # extract uploaded tar into the new release dir
+            tar -xzf ~/app/releases/app_${{ github.run_id }}.tar.gz -C "$RELEASE_DIR"
+
+            # atomically point 'current' symlink to new release
+            ln -sfn "$RELEASE_DIR" ~/app/current
+
+            # change to current
+            cd ~/app/current
+
+            # ensure pm2 exists (install only if missing)
+            if ! command -v pm2 >/dev/null 2>&1; then
+              sudo npm install -g pm2
+              # create pm2 startup service (idempotent)
+              pm2 startup systemd -u ${{ secrets.VM_USERNAME }} --hp /home/${{ secrets.VM_USERNAME }} || true
             fi
+
+            # set NODE_ENV for runtime
+            export NODE_ENV=production
+
+            # graceful reload (zero-downtime) or start if first time
+            if pm2 list | grep -q "varun-api"; then
+              pm2 reload varun-api --update-env
+            else
+              pm2 start server.js --name varun-api --update-env --time
+            fi
+
             pm2 save
