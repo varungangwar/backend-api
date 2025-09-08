@@ -1,4 +1,4 @@
-name: Deploy API
+name: Deploy API (Zero-Downtime)
 
 on:
   push:
@@ -9,33 +9,33 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout Code
-        uses: actions/checkout@v3
+      - name: Checkout
+        uses: actions/checkout@v4
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v3
+      # Code ko bina delete kiye VM par copy karo (no downtime)
+      - name: Copy code to VM
+        uses: appleboy/scp-action@v0.1.7
         with:
-          node-version: 18
+          host: ${{ secrets.VM_HOST }}
+          username: ${{ secrets.VM_USERNAME }}
+          key: ${{ secrets.VM_SSH_KEY }}
+          # simple project hai, bas yeh files bhejni kaafi
+          source: "server.js,package.json"
+          target: "~/app"
 
-      - name: Install Dependencies
-        run: npm install
-
-      - name: Deploy via SSH
+      # Dependencies install + pm2 reload/start
+      - name: Install deps & reload with pm2
         uses: appleboy/ssh-action@v1.0.3
         with:
           host: ${{ secrets.VM_HOST }}
           username: ${{ secrets.VM_USERNAME }}
           key: ${{ secrets.VM_SSH_KEY }}
           script: |
-            sudo fuser -k 80/tcp || true
-            mkdir -p ~/app
             cd ~/app
-            rm -rf *
-            cat > server.js <<'EOF'
-            const express = require("express");
-            const app = express();
-            const PORT = 80;
-            app.get("/sayHello", (req, res) => {
-              res.json({ message: "Hello User" });
-            });
-            app.listen(PORT, () => console.log("API running
+            npm install --omit=dev
+            if pm2 list | grep -q "varun-api"; then
+              pm2 reload varun-api
+            else
+              pm2 start server.js --name varun-api
+            fi
+            pm2 save
