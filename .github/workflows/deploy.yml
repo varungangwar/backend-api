@@ -17,9 +17,6 @@ jobs:
         with:
           node-version: 18
 
-      - name: Install Dependencies
-        run: npm install
-
       - name: Deploy via SSH
         uses: appleboy/ssh-action@v1.0.3
         with:
@@ -27,19 +24,25 @@ jobs:
           username: ${{ secrets.VM_USERNAME }}
           key: ${{ secrets.VM_SSH_KEY }}
           script: |
-            sudo fuser -k 80/tcp || true
+            # Ensure app directory exists
             mkdir -p ~/app
             cd ~/app
-            rm -rf *
-            cat > server.js <<'EOF'
-            const express = require("express");
-            const app = express();
-            const PORT = 80;
-            app.get("/sayHello", (req, res) => {
-              res.json({ message: "Hello User" });
-            });
-            app.listen(PORT, () => console.log("API running on port", PORT));
-            EOF
-            npm init -y
-            npm install express
-            nohup node server.js > output.log 2>&1 &
+
+            # Pull latest code
+            git init
+            git remote remove origin || true
+            git remote add origin https://github.com/varungangwar/backend-api.git
+            git fetch origin main
+            git reset --hard origin/main
+
+            # Install dependencies without deleting everything
+            npm install
+
+            # Use pm2 for zero-downtime restart
+            if pm2 list | grep -q "varun-api"; then
+              pm2 reload varun-api
+            else
+              pm2 start server.js --name varun-api --watch
+            fi
+            pm2 save
+
